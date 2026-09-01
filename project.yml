@@ -1,18 +1,23 @@
 name: SightReadingTrainer
+
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
     iOS: "17.0"
+
 targets:
   SightReadingTrainer:
     type: application
     platform: iOS
+
     sources:
       - path: Sources
         excludes:
           - Audio
+
     resources:
       - path: Sources/Audio
+
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sightreadingtrainer
