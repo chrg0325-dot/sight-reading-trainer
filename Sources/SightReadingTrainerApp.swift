@@ -206,6 +206,8 @@ final class GameModel: ObservableObject {
     private var questionStart = Date()
     private var completedUnits = 0
     private var currentClef: StaffClef = .treble
+    // 4음 연속 모드에서는 한 세트(4음)가 끝날 때까지 음자리표를 절대 바꾸지 않는다.
+    private var sequenceSetClef: StaffClef?
 
     init() {
         midi.onNoteOn = { [weak self] note, _ in
@@ -226,12 +228,14 @@ final class GameModel: ObservableObject {
         correctCount = 0; attemptCount = 0; responseTimes = []
         completedUnits = 0; feedback = ""; pressedMidi = nil
         isFinished = false; isPlaying = true
+        sequenceSetClef = nil
         makeQuestion()
     }
 
     func quit() {
         isPlaying = false
         isFinished = false
+        sequenceSetClef = nil
         notes = []
     }
 
@@ -298,16 +302,27 @@ final class GameModel: ObservableObject {
     private func makeQuestion() {
         feedback = ""
         activeIndex = 0
-        currentClef = chooseClef()
+
         if mode == .single {
+            currentClef = chooseClef()
             notes = [randomNote(clef: currentClef, avoiding: nil)]
         } else {
+            // 세트 시작 시 딱 한 번만 음자리표를 결정한다.
+            // 1→2→3→4번째 음으로 넘어갈 때는 이 값을 다시 뽑지 않는다.
+            let setClef = chooseClef()
+            sequenceSetClef = setClef
+            currentClef = setClef
+
             var built: [QuestionNote] = []
             for _ in 0..<4 {
-                let n = randomNote(clef: currentClef, avoiding: built.last?.midi)
+                let n = randomNote(clef: setClef, avoiding: built.last?.midi)
                 built.append(n)
             }
             notes = built
+
+            // 방어 검증: 한 세트의 4음은 반드시 같은 음자리표여야 한다.
+            precondition(notes.allSatisfy { $0.clef == setClef },
+                         "Sequence set must use one fixed clef")
         }
         questionStart = Date()
     }
