@@ -1,30 +1,27 @@
-# 초견 트레이너 iPad v1.0
+# 초견 트레이너 v1.0 재설계판 - 검증수정
 
-iPad 가로 전용 SwiftUI + Core MIDI 네이티브 앱입니다.
+핵심 변경:
 
-## 포함 기능
-- 단음 30문제
-- 4음 연속 40개 정답(10세트)
-- 높은음자리표 / 낮은음자리표 / 둘 다
-- C2~C6 문제 범위
-- 샵/플랫
-- 실제 MIDI Note On 입력
-- 화면 가상 건반 입력
-- PERFECT/GREAT/GOOD/OK/MISS 판정
-- 점수, 콤보, 정확도, 평균 반응시간
-- S/A/B/C 결과
-- 개인 최고점
-- 가로 전용 iPad UI
+- 악보: 직접 그린 음자리표 제거, VexFlow 4.2.2 사용
+- 화면 건반: C2~C6 (MIDI 36~84), 기존과 비슷한 크기 유지
+- 음원: C2~C6의 49개 반음 각각에 대응하는 별도 MP3를 직접 다운로드해 `midi_36.mp3` ~ `midi_84.mp3`로 1:1 저장
+- 런타임 음정 변조/재생속도 변환 없음
+- 빌드 중 49개 파일 존재 여부와 파일 해시 중복 여부 검사
+- MIDI: 실제 피아노의 MIDI note-on 번호는 전 범위 그대로 수신하며 출제 MIDI 번호와 정확히 같아야 정답
+- 실제 MIDI 입력 시 앱 샘플을 중복 재생하지 않음
+- 단음 30문제 / 4음×10세트 로직 유지
 
-## GitHub Actions 빌드
-이 ZIP의 내용물을 새 GitHub 저장소의 루트에 올리면,
-`.github/workflows/build.yml`이 macOS runner에서 unsigned IPA를 생성합니다.
+## GitHub에 올릴 파일
 
-Artifacts:
-`SightReadingTrainer-unsigned-IPA`
+기존 저장소에서 다음을 교체하세요.
 
-다운로드한 IPA는 Windows Sideloadly에서 본인 Apple ID로 서명하여 iPad에 설치할 수 있습니다.
+- `project.yml`
+- `Sources/Info.plist`
+- `Sources/SightReadingTrainerApp.swift`
+- `Sources/notation.html`
+- `.github/workflows/main.yml`
+- `NOTICE.txt`
 
-## 주의
-현재 버전의 오선지는 SwiftUI Canvas로 직접 그립니다.
-실제 M115 USB MIDI 연결은 케이블 도착 후 실기기에서 최종 검증해야 합니다.
+## 검증 범위
+
+정적 검사와 빌드 단계 자동 검증을 넣었지만, 최종 IPA의 실제 iPad 화면 렌더링과 스피커 음정은 실제 기기 설치 후 마지막으로 확인해야 합니다.

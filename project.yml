@@ -9,15 +9,13 @@ targets:
   SightReadingTrainer:
     type: application
     platform: iOS
-
     sources:
       - path: Sources
         excludes:
           - Audio
-
+          - Vendor
     resources:
-      - path: Sources/Audio
-
+      - path: Sources/notation.html
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sightreadingtrainer

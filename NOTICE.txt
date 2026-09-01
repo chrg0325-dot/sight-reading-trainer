@@ -1,0 +1,14 @@
+초견 트레이너 v1.0 - third-party notices
+
+VexFlow 4.2.2
+Copyright VexFlow contributors
+License: MIT
+https://github.com/0xfe/vexflow
+
+Piano samples
+Distribution package: tonejs-instrument-piano-mp3 1.1.2
+Source project lineage: nbrosowsky/tonejs-instruments
+Samples license stated by the source project: CC BY 3.0
+Piano sample source stated by the source project: VSO2 (Versilian Studios Community Sample Library)
+
+The GitHub Actions build downloads one dedicated MP3 file for every on-screen key C2-C6 and renames it to midi_36.mp3 ... midi_84.mp3. No runtime pitch/rate transposition is used.

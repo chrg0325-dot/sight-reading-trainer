@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;height:100%;}
+#score{width:100%;height:100%;display:flex;align-items:center;justify-content:center;}
+svg{display:block;overflow:visible;}
+</style>
+</head>
+<body>
+<div id="score"></div>
+<script src="vexflow.js"></script>
+<script>
+(function(){
+  const VF = Vex.Flow;
+  function makeNote(spec) {
+    const key = spec.key;
+    const note = new VF.StaveNote({clef: spec.clef, keys:[key], duration:'q'});
+    if (spec.accidental) note.addModifier(new VF.Accidental(spec.accidental), 0);
+    if (spec.dimmed) note.setStyle({fillStyle:'#9CA3AF', strokeStyle:'#9CA3AF'});
+    return note;
+  }
+  window.renderSightNotes = function(payload){
+    try {
+      const root = document.getElementById('score');
+      root.innerHTML = '';
+      const width = Math.max(420, Math.min(900, window.innerWidth || 700));
+      const height = Math.max(190, Math.min(300, window.innerHeight || 240));
+      const renderer = new VF.Renderer(root, VF.Renderer.Backends.SVG);
+      renderer.resize(width, height);
+      const ctx = renderer.getContext();
+      ctx.setFillStyle('#111827');
+      ctx.setStrokeStyle('#111827');
+      const staveWidth = Math.max(360, width - 70);
+      const stave = new VF.Stave(35, Math.max(40, (height-120)/2), staveWidth);
+      stave.addClef(payload.clef || 'treble');
+      stave.setContext(ctx).draw();
+
+      const notes = (payload.notes || []).map(makeNote);
+      if (!notes.length) return 'ok';
+      const voice = new VF.Voice({num_beats: notes.length, beat_value: 4});
+      voice.setStrict(false);
+      voice.addTickables(notes);
+      new VF.Formatter().joinVoices([voice]).format([voice], Math.max(180, staveWidth - 125));
+      voice.draw(ctx, stave);
+      return 'ok';
+    } catch(e) {
+      document.getElementById('score').innerText = '악보 렌더링 오류';
+      return String(e);
+    }
+  };
+})();
+</script>
+</body>
+</html>
