@@ -13,6 +13,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download real piano samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p Sources/Audio
+          BASE="https://cdn.jsdelivr.net/npm/@audio-samples/piano-mp3-velocity4@1.0.5/audio"
+          for FILE in C2v4.mp3 A2v4.mp3 C3v4.mp3 A3v4.mp3 C4v4.mp3 A4v4.mp3 C5v4.mp3 A5v4.mp3 C6v4.mp3; do
+            echo "Downloading $FILE"
+            curl -fL --retry 3 --retry-delay 2 "$BASE/$FILE" -o "Sources/Audio/$FILE"
+            test -s "Sources/Audio/$FILE"
+          done
+          echo "Bundled piano samples:"
+          ls -lh Sources/Audio/*.mp3
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -32,6 +46,13 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Verify audio is inside app
+        run: |
+          echo "Audio resources inside built app:"
+          find build/Build/Products/Release-iphoneos/SightReadingTrainer.app -type f \
+            \( -name 'C2v4.mp3' -o -name 'C4v4.mp3' -o -name 'C6v4.mp3' \) -print
+          test -n "$(find build/Build/Products/Release-iphoneos/SightReadingTrainer.app -name 'C4v4.mp3' -print -quit)"
 
       - name: Package unsigned IPA
         run: |
