@@ -17,7 +17,9 @@ svg{display:block;overflow:visible;}
   function makeNote(spec) {
     const note = new VF.StaveNote({clef: spec.clef, keys:[spec.key], duration:'q'});
     if (spec.accidental) note.addModifier(new VF.Accidental(spec.accidental), 0);
-    if (spec.dimmed) note.setStyle({fillStyle:'#9CA3AF', strokeStyle:'#9CA3AF'});
+    if (spec.state === 'done') note.setStyle({fillStyle:'#B6BBC3', strokeStyle:'#B6BBC3'});
+    else if (spec.state === 'future') note.setStyle({fillStyle:'#737B87', strokeStyle:'#737B87'});
+    else note.setStyle({fillStyle:'#111827', strokeStyle:'#111827'});
     return note;
   }
 

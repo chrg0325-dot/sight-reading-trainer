@@ -533,44 +533,66 @@ struct TrainingView: View {
     @EnvironmentObject var game: GameModel
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 16) {
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
                 Button("종료") { game.quit() }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                 HUDItem(label: "진행", value: game.progressText)
                 HUDItem(label: "점수", value: "\(game.score)")
                 HUDItem(label: "콤보", value: "\(game.combo)")
                 HUDItem(label: "정확도", value: String(format: "%.1f%%", game.accuracy))
                 HUDItem(label: "평균", value: game.responseTimes.isEmpty ? "-" : String(format: "%.2fs", game.averageTime))
-                Spacer()
+                Spacer(minLength: 8)
                 StatusPill(text: game.midi.sources.isEmpty ? "MIDI 대기" : "MIDI 연결", on: !game.midi.sources.isEmpty)
             }
             .padding(.horizontal, 22)
-            .padding(.top, 10)
+            .padding(.top, 6)
 
-            ZStack(alignment: .topTrailing) {
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(.white)
+            ZStack {
+                RoundedRectangle(cornerRadius: 18).fill(.white)
+
                 NotationWebView(notes: game.notes, activeIndex: game.activeIndex, isSingle: game.mode == .single)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if !game.feedback.isEmpty {
-                    Text(game.feedback)
-                        .font(.system(size: 48, weight: .black, design: .rounded))
-                        .foregroundStyle(feedbackColor(game.feedback))
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 8)
-                        .background(.white.opacity(0.94), in: Capsule())
-                        .shadow(radius: 4, y: 2)
-                        .offset(y: -78)
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
+                // 판정은 화면 전체가 아니라 악보 카드 자체를 기준으로 배치한다.
+                // 오선 위 중앙에 고정되어 iPad 비율이 달라도 우측 상단으로 밀리지 않는다.
+                VStack(spacing: 0) {
+                    if !game.feedback.isEmpty {
+                        Text(game.feedback)
+                            .font(.system(size: 48, weight: .black, design: .rounded))
+                            .foregroundStyle(feedbackColor(game.feedback))
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 7)
+                            .background(.white.opacity(0.94), in: Capsule())
+                            .shadow(radius: 4, y: 2)
+                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    }
+                    Spacer()
                 }
-                if let target = game.notes.indices.contains(game.activeIndex) ? game.notes[game.activeIndex] : nil {
-                    Text(target.clef == .treble ? "높은음자리표" : "낮은음자리표")
-                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                        .padding(10)
+                .padding(.top, 10)
+                .allowsHitTesting(false)
+
+                VStack {
+                    HStack {
+                        if game.mode == .sequence {
+                            Text("\(game.activeIndex + 1)/4")
+                                .font(.subheadline.bold().monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.thinMaterial, in: Capsule())
+                        }
+                        Spacer()
+                        if let target = game.notes.indices.contains(game.activeIndex) ? game.notes[game.activeIndex] : nil {
+                            Text(target.clef == .treble ? "높은음자리표" : "낮은음자리표")
+                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
                 }
+                .padding(10)
+                .allowsHitTesting(false)
             }
             .frame(maxHeight: .infinity)
             .padding(.horizontal, 22)
@@ -581,7 +603,7 @@ struct TrainingView: View {
                 }
                 .frame(height: 180)
                 .padding(.horizontal, 22)
-                .padding(.bottom, 12)
+                .padding(.bottom, 8)
             }
         }
     }
@@ -601,11 +623,13 @@ struct HUDItem: View {
     let label: String
     let value: String
     var body: some View {
-        VStack(spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.headline.monospacedDigit())
+        HStack(spacing: 5) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.subheadline.bold().monospacedDigit())
         }
-        .frame(minWidth: 75)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.white.opacity(0.7), in: Capsule())
     }
 }
 
@@ -616,7 +640,7 @@ struct NotationPayload: Codable {
         let key: String
         let clef: String
         let accidental: String?
-        let dimmed: Bool
+        let state: String
     }
     let clef: String
     let notes: [Item]
@@ -652,7 +676,12 @@ struct NotationWebView: UIViewRepresentable {
     private func payload() -> NotationPayload {
         let clef = notes.first?.clef.rawValue ?? "treble"
         let items = notes.enumerated().map { index, note in
-            NotationPayload.Item(key: note.vexKey, clef: note.clef.rawValue, accidental: note.accidental, dimmed: index < activeIndex)
+            let state: String
+            if isSingle { state = "current" }
+            else if index < activeIndex { state = "done" }
+            else if index == activeIndex { state = "current" }
+            else { state = "future" }
+            return NotationPayload.Item(key: note.vexKey, clef: note.clef.rawValue, accidental: note.accidental, state: state)
         }
         return NotationPayload(clef: clef, notes: items, single: isSingle)
     }
@@ -697,7 +726,7 @@ struct PianoKeyboardView: View {
                 HStack(spacing: 0) {
                     ForEach(whites, id: \.self) { midi in
                         Rectangle()
-                            .fill(pressedMidi == midi ? Color(red: 0.73, green: 0.84, blue: 1.0) : .white)
+                            .fill(pressedMidi == midi ? Color.gray.opacity(0.35) : .white)
                             .overlay(Rectangle().stroke(Color.black.opacity(0.45), lineWidth: 0.6))
                     }
                 }
@@ -706,7 +735,7 @@ struct PianoKeyboardView: View {
                     if let leftWhiteIndex = whiteIndexBefore(midi, whites: whites) {
                         let x = (CGFloat(leftWhiteIndex + 1) * whiteWidth) - (whiteWidth * 0.31)
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(pressedMidi == midi ? Color(red: 0.32, green: 0.48, blue: 0.78) : .black)
+                            .fill(pressedMidi == midi ? Color.gray : .black)
                             .frame(width: whiteWidth * 0.62, height: geo.size.height * 0.62)
                             .offset(x: x)
                             .allowsHitTesting(false)
