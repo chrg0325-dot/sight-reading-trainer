@@ -244,7 +244,7 @@ struct Home:View {
                 Text("악보를 보는 순간, 정확한 건반으로.")
                     .font(.title3.weight(.medium)).foregroundStyle(.secondary)
                 Spacer().frame(height:12)
-                Status(midi.sources.isEmpty ? "MIDI 피아노 연결 대기":"MIDI 연결됨 · \(midi.sources.first!)",on:!midi.sources.isEmpty)
+                Status(text:midi.sources.isEmpty ? "MIDI 피아노 연결 대기":"MIDI 연결됨 · \(midi.sources.first!)",on:!midi.sources.isEmpty)
                 Spacer()
                 Button("MIDI 테스트"){g.midiTest=true}.buttonStyle(.bordered)
             }.frame(maxWidth:360,alignment:.leading)
