@@ -1,0 +1,12 @@
+Piano audio attribution
+
+This app uses a compact subset of Salamander Grand Piano V3 by Alexander Holm.
+The recordings are of a Yamaha C5 grand piano.
+
+License: Creative Commons Attribution 3.0 (CC BY 3.0)
+Source: https://archive.org/details/SalamanderGrandPianoV3
+License text: https://creativecommons.org/licenses/by/3.0/
+
+For this app, selected MP3 anchor samples are downloaded during the GitHub Actions
+build from the @audio-samples/piano-mp3-velocity4 package and bundled inside the IPA.
+Playback rate is changed by a small amount for notes between the recorded anchors.
