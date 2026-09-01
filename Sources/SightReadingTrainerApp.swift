@@ -206,6 +206,9 @@ final class GameModel: ObservableObject {
     private var questionStart = Date()
     private var completedUnits = 0
     private var currentClef: StaffClef = .treble
+    private var currentNoteMissed = false
+    private var feedbackGeneration = 0
+    private var finishing = false
     // 4음 연속 모드에서는 한 세트(4음)가 끝날 때까지 음자리표를 절대 바꾸지 않는다.
     private var sequenceSetClef: StaffClef?
 
@@ -227,6 +230,7 @@ final class GameModel: ObservableObject {
         score = 0; combo = 0; maxCombo = 0
         correctCount = 0; attemptCount = 0; responseTimes = []
         completedUnits = 0; feedback = ""; pressedMidi = nil
+        currentNoteMissed = false; feedbackGeneration = 0; finishing = false
         isFinished = false; isPlaying = true
         sequenceSetClef = nil
         makeQuestion()
@@ -235,12 +239,13 @@ final class GameModel: ObservableObject {
     func quit() {
         isPlaying = false
         isFinished = false
+        finishing = false
         sequenceSetClef = nil
         notes = []
     }
 
     func input(_ midiNote: Int, playAppSound: Bool) {
-        guard isPlaying, !isFinished, !notes.isEmpty else { return }
+        guard isPlaying, !isFinished, !finishing, !notes.isEmpty else { return }
         pressedMidi = midiNote
         if playAppSound { audio.play(midi: midiNote) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
@@ -248,40 +253,74 @@ final class GameModel: ObservableObject {
         }
 
         guard notes.indices.contains(activeIndex) else { return }
-        attemptCount += 1
         let target = notes[activeIndex]
+
         if midiNote == target.midi {
+            if currentNoteMissed {
+                // 이미 한 번 틀린 음은 MISS 결과로 확정한다.
+                // 정답 건반을 찾으면 다음 음으로 진행하지만 속도 점수/콤보/정답률 보너스는 주지 않는다.
+                completedUnits += 1
+                advanceAfterResolvedNote()
+                return
+            }
+
+            attemptCount += 1
             correctCount += 1
             combo += 1
             maxCombo = max(maxCombo, combo)
             let elapsed = Date().timeIntervalSince(questionStart)
             responseTimes.append(elapsed)
             let base: Int
-            if elapsed <= 0.8 { feedback = "PERFECT"; base = 100 }
-            else if elapsed <= 1.5 { feedback = "GREAT"; base = 80 }
-            else if elapsed <= 2.5 { feedback = "GOOD"; base = 60 }
-            else { feedback = "OK"; base = 40 }
+            let rating: String
+            if elapsed <= 0.8 { rating = "PERFECT"; base = 100 }
+            else if elapsed <= 1.5 { rating = "GREAT"; base = 80 }
+            else if elapsed <= 2.5 { rating = "GOOD"; base = 60 }
+            else { rating = "OK"; base = 40 }
+            showFeedback(rating)
             let bonus = min(50, max(0, combo - 1) * 2)
             score += base + bonus
             completedUnits += 1
-
-            if completedUnits >= totalCorrectNeeded {
-                finish()
-                return
-            }
-
-            if mode == .sequence && activeIndex < notes.count - 1 {
-                activeIndex += 1
-                questionStart = Date()
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                    self?.makeQuestion()
-                }
-            }
+            advanceAfterResolvedNote()
         } else {
-            combo = 0
-            feedback = "MISS"
-            // Same note remains until correct.
+            if !currentNoteMissed {
+                // 오답은 한 음당 한 번만 통계에 반영한다. 이후 정답을 찾을 때까지 같은 음을 유지한다.
+                currentNoteMissed = true
+                attemptCount += 1
+                combo = 0
+            }
+            showFeedback("MISS")
+        }
+    }
+
+    private func advanceAfterResolvedNote() {
+        if completedUnits >= totalCorrectNeeded {
+            // 마지막 판정도 사용자가 확인할 수 있게 잠깐 보여준 뒤 결과 화면으로 이동한다.
+            finishing = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+                self?.finish()
+            }
+            return
+        }
+
+        if mode == .sequence && activeIndex < notes.count - 1 {
+            activeIndex += 1
+            currentNoteMissed = false
+            questionStart = Date()
+        } else {
+            // 판정은 화면에 조금 더 남겨두되 다음 문제는 빠르게 제시한다.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                self?.makeQuestion()
+            }
+        }
+    }
+
+    private func showFeedback(_ text: String) {
+        feedbackGeneration += 1
+        let generation = feedbackGeneration
+        feedback = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
+            guard let self, self.feedbackGeneration == generation else { return }
+            self.feedback = ""
         }
     }
 
@@ -300,8 +339,8 @@ final class GameModel: ObservableObject {
     }
 
     private func makeQuestion() {
-        feedback = ""
         activeIndex = 0
+        currentNoteMissed = false
 
         if mode == .single {
             currentClef = chooseClef()
@@ -343,7 +382,9 @@ final class GameModel: ObservableObject {
         case .basic:
             range = clef == .treble ? 55...84 : 36...67
         case .full:
-            range = 36...84
+            // 전체 C2~C6 범위는 유지하되 실제 피아노 악보처럼 음자리표에 맞게 배분한다.
+            // 극단적인 '높은음자리표+C2' / '낮은음자리표+C6' 조합은 피한다.
+            range = clef == .treble ? 55...84 : 36...67
         }
 
         let naturalPC: Set<Int> = [0,2,4,5,7,9,11]
@@ -510,13 +551,20 @@ struct TrainingView: View {
             ZStack(alignment: .topTrailing) {
                 RoundedRectangle(cornerRadius: 18)
                     .fill(.white)
-                VStack(spacing: 0) {
-                    NotationWebView(notes: game.notes, activeIndex: game.activeIndex)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                NotationWebView(notes: game.notes, activeIndex: game.activeIndex, isSingle: game.mode == .single)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if !game.feedback.isEmpty {
                     Text(game.feedback)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .frame(height: 30)
+                        .font(.system(size: 48, weight: .black, design: .rounded))
                         .foregroundStyle(feedbackColor(game.feedback))
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 8)
+                        .background(.white.opacity(0.94), in: Capsule())
+                        .shadow(radius: 4, y: 2)
+                        .offset(y: -78)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                 }
                 if let target = game.notes.indices.contains(game.activeIndex) ? game.notes[game.activeIndex] : nil {
                     Text(target.clef == .treble ? "높은음자리표" : "낮은음자리표")
@@ -572,11 +620,13 @@ struct NotationPayload: Codable {
     }
     let clef: String
     let notes: [Item]
+    let single: Bool
 }
 
 struct NotationWebView: UIViewRepresentable {
     let notes: [QuestionNote]
     let activeIndex: Int
+    let isSingle: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -604,7 +654,7 @@ struct NotationWebView: UIViewRepresentable {
         let items = notes.enumerated().map { index, note in
             NotationPayload.Item(key: note.vexKey, clef: note.clef.rawValue, accidental: note.accidental, dimmed: index < activeIndex)
         }
-        return NotationPayload(clef: clef, notes: items)
+        return NotationPayload(clef: clef, notes: items, single: isSingle)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
@@ -649,21 +699,9 @@ struct PianoKeyboardView: View {
                         Rectangle()
                             .fill(pressedMidi == midi ? Color(red: 0.73, green: 0.84, blue: 1.0) : .white)
                             .overlay(Rectangle().stroke(Color.black.opacity(0.45), lineWidth: 0.6))
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 0)
-                                    .onChanged { _ in
-                                        if activeTouchMidi != midi {
-                                            activeTouchMidi = midi
-                                            onPress(midi)
-                                        }
-                                    }
-                                    .onEnded { _ in
-                                        if activeTouchMidi == midi { activeTouchMidi = nil }
-                                    }
-                            )
                     }
                 }
+
                 ForEach(Array(range).filter { blackPC.contains($0 % 12) }, id: \.self) { midi in
                     if let leftWhiteIndex = whiteIndexBefore(midi, whites: whites) {
                         let x = (CGFloat(leftWhiteIndex + 1) * whiteWidth) - (whiteWidth * 0.31)
@@ -671,33 +709,55 @@ struct PianoKeyboardView: View {
                             .fill(pressedMidi == midi ? Color(red: 0.32, green: 0.48, blue: 0.78) : .black)
                             .frame(width: whiteWidth * 0.62, height: geo.size.height * 0.62)
                             .offset(x: x)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 0)
-                                    .onChanged { _ in
-                                        if activeTouchMidi != midi {
-                                            activeTouchMidi = midi
-                                            onPress(midi)
-                                        }
-                                    }
-                                    .onEnded { _ in
-                                        if activeTouchMidi == midi { activeTouchMidi = nil }
-                                    }
-                            )
+                            .allowsHitTesting(false)
                     }
                 }
+
                 ForEach(36...84, id: \.self) { midi in
                     if midi % 12 == 0, isWhite(midi), let idx = whites.firstIndex(of: midi) {
                         Text("C\(midi/12-1)")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
                             .position(x: (CGFloat(idx)+0.5)*whiteWidth, y: geo.size.height-11)
+                            .allowsHitTesting(false)
                     }
                 }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        guard let midi = midiAt(location: value.location, size: geo.size, whites: whites) else { return }
+                        if activeTouchMidi != midi {
+                            activeTouchMidi = midi
+                            onPress(midi)
+                        }
+                    }
+                    .onEnded { _ in
+                        activeTouchMidi = nil
+                    }
+            )
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.35), lineWidth: 1))
         }
+    }
+
+    private func midiAt(location: CGPoint, size: CGSize, whites: [Int]) -> Int? {
+        guard location.x >= 0, location.y >= 0, location.x < size.width, location.y < size.height, !whites.isEmpty else { return nil }
+        let whiteWidth = size.width / CGFloat(whites.count)
+
+        // 검은건반은 흰건반 위에 겹치므로 반드시 먼저 판정한다.
+        if location.y <= size.height * 0.62 {
+            for midi in range where blackPC.contains(midi % 12) {
+                guard let leftWhiteIndex = whiteIndexBefore(midi, whites: whites) else { continue }
+                let left = CGFloat(leftWhiteIndex + 1) * whiteWidth - whiteWidth * 0.31
+                let right = left + whiteWidth * 0.62
+                if location.x >= left && location.x < right { return midi }
+            }
+        }
+
+        let index = min(whites.count - 1, max(0, Int(location.x / whiteWidth)))
+        return whites[index]
     }
 
     private func isWhite(_ midi: Int) -> Bool { !blackPC.contains(midi % 12) }

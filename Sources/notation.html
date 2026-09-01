@@ -15,12 +15,12 @@ svg{display:block;overflow:visible;}
 (function(){
   const VF = Vex.Flow;
   function makeNote(spec) {
-    const key = spec.key;
-    const note = new VF.StaveNote({clef: spec.clef, keys:[key], duration:'q'});
+    const note = new VF.StaveNote({clef: spec.clef, keys:[spec.key], duration:'q'});
     if (spec.accidental) note.addModifier(new VF.Accidental(spec.accidental), 0);
     if (spec.dimmed) note.setStyle({fillStyle:'#9CA3AF', strokeStyle:'#9CA3AF'});
     return note;
   }
+
   window.renderSightNotes = function(payload){
     try {
       const root = document.getElementById('score');
@@ -32,8 +32,14 @@ svg{display:block;overflow:visible;}
       const ctx = renderer.getContext();
       ctx.setFillStyle('#111827');
       ctx.setStrokeStyle('#111827');
-      const staveWidth = Math.max(360, width - 70);
-      const stave = new VF.Stave(35, Math.max(40, (height-120)/2), staveWidth);
+
+      // 단음은 실제 한 문제 카드처럼 짧은 오선을 중앙에 배치하고,
+      // 4음 연속은 여러 음을 읽기 편하도록 넓은 오선을 사용한다.
+      const isSingle = !!payload.single;
+      const staveWidth = isSingle ? Math.min(380, Math.max(300, width * 0.44)) : Math.max(360, width - 70);
+      const staveX = isSingle ? (width - staveWidth) / 2 : 35;
+      const staveY = Math.max(40, (height - 120) / 2);
+      const stave = new VF.Stave(staveX, staveY, staveWidth);
       stave.addClef(payload.clef || 'treble');
       stave.setContext(ctx).draw();
 
@@ -42,7 +48,10 @@ svg{display:block;overflow:visible;}
       const voice = new VF.Voice({num_beats: notes.length, beat_value: 4});
       voice.setStrict(false);
       voice.addTickables(notes);
-      new VF.Formatter().joinVoices([voice]).format([voice], Math.max(180, staveWidth - 125));
+
+      const formatWidth = isSingle ? Math.max(130, staveWidth - 150) : Math.max(180, staveWidth - 125);
+      new VF.Formatter().joinVoices([voice]).format([voice], formatWidth);
+      if (isSingle && notes[0]) notes[0].setXShift(Math.max(12, staveWidth * 0.10));
       voice.draw(ctx, stave);
       return 'ok';
     } catch(e) {
