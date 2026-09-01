@@ -19,12 +19,15 @@ jobs:
           set -euo pipefail
           mkdir -p Sources/Audio
           BASE="https://cdn.jsdelivr.net/npm/@audio-samples/piano-mp3-velocity4@1.0.5/audio"
+
           for FILE in C2v4.mp3 A2v4.mp3 C3v4.mp3 A3v4.mp3 C4v4.mp3 A4v4.mp3 C5v4.mp3 A5v4.mp3 C6v4.mp3; do
             echo "Downloading $FILE"
-            curl -fL --retry 3 --retry-delay 2 "$BASE/$FILE" -o "Sources/Audio/$FILE"
+            curl -fL --retry 3 --retry-delay 2 \
+              "$BASE/$FILE" \
+              -o "Sources/Audio/$FILE"
             test -s "Sources/Audio/$FILE"
           done
-          echo "Bundled piano samples:"
+
           ls -lh Sources/Audio/*.mp3
 
       - name: Install XcodeGen
@@ -47,18 +50,44 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      - name: Verify audio is inside app
+      - name: Copy piano samples into app
+        shell: bash
         run: |
-          echo "Audio resources inside built app:"
-          find build/Build/Products/Release-iphoneos/SightReadingTrainer.app -type f \
-            \( -name 'C2v4.mp3' -o -name 'C4v4.mp3' -o -name 'C6v4.mp3' \) -print
-          test -n "$(find build/Build/Products/Release-iphoneos/SightReadingTrainer.app -name 'C4v4.mp3' -print -quit)"
+          set -euo pipefail
+
+          APP="build/Build/Products/Release-iphoneos/SightReadingTrainer.app"
+
+          test -d "$APP"
+
+          cp Sources/Audio/*.mp3 "$APP/"
+
+          echo "Copied piano samples:"
+          ls -lh "$APP"/*.mp3
+
+      - name: Verify audio is inside app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="build/Build/Products/Release-iphoneos/SightReadingTrainer.app"
+
+          test -s "$APP/C2v4.mp3"
+          test -s "$APP/C4v4.mp3"
+          test -s "$APP/C6v4.mp3"
+
+          echo "Piano audio verified successfully."
 
       - name: Package unsigned IPA
         run: |
+          rm -rf Payload
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/SightReadingTrainer.app Payload/
-          ditto -c -k --sequesterRsrc --keepParent Payload SightReadingTrainer-unsigned.ipa
+          cp -R \
+            build/Build/Products/Release-iphoneos/SightReadingTrainer.app \
+            Payload/
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            Payload \
+            SightReadingTrainer-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
