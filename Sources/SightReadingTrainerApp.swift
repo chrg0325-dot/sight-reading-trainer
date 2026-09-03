@@ -26,6 +26,7 @@ enum TrainingFamily: String, CaseIterable, Identifiable {
     case oneHand = "한손"
     case twoHand = "양손"
     case chord = "화음"
+    case sight = "초견"
     var id: String { rawValue }
 }
 
@@ -80,6 +81,64 @@ struct ResultStats {
     let accuracy: Double
     let average: Double
     let maxCombo: Int
+}
+
+
+
+// MARK: - Sight-reading song data
+
+struct SightPitch: Codable, Hashable {
+    let step: String
+    let alter: Int
+    let octave: Int
+    let midi: Int
+    let vexKey: String
+    let accidental: String?
+    let name: String
+    let forcedAccidental: Bool
+    let displayAccidental: String?
+}
+
+struct SightEvent: Codable {
+    let type: String
+    let offset: Double
+    let durationBeats: Double
+    let staff: String
+    let voice: String
+    let pitches: [SightPitch]?
+    let tieStart: Bool
+    let tieStop: Bool
+}
+
+struct SightMeasure: Codable {
+    let number: Int
+    let voices: [String: [SightEvent]]
+}
+
+struct SightAttackSource: Codable {
+    let voice: String
+    let staff: String
+    let midi: Int
+    let name: String
+}
+
+struct SightAttackGroup: Codable {
+    let measure: Int
+    let offsetBeats: Double
+    let notes: [Int]
+    let sources: [SightAttackSource]
+}
+
+struct SightSong: Codable {
+    let schemaVersion: String
+    let id: String
+    let title: String
+    let composer: String
+    let year: Int
+    let sourcePages: [Int]
+    let measureCount: Int
+    let attackGroups: [SightAttackGroup]
+    let measures: [SightMeasure]
 }
 
 // MARK: - Audio
@@ -230,6 +289,12 @@ final class GameModel: ObservableObject {
     @Published var heldMidis: Set<Int> = []
     @Published var result: ResultStats?
 
+    // 초견 모드 전용 상태
+    @Published var sightSong: SightSong?
+    @Published var sightAttackIndex = 0
+    @Published var sightWrongAttempts = 0
+    @Published var sightLoadError: String?
+
     let midi = MIDIManager()
     private let audio = PianoAudio()
     private var questionStart = Date()
@@ -247,6 +312,7 @@ final class GameModel: ObservableObject {
     private var multiWindowWorkItem: DispatchWorkItem?
     // 양손/화음 동시입력 허용시간. 입문은 손 모양을 익힐 여유를 주고, 난이도가 오를수록 실제 동시타건에 가깝게 좁힌다.
     private var simultaneousWindow: TimeInterval {
+        if family == .sight { return 0.24 }
         switch difficulty {
         case .intro: return 0.24
         case .basic: return 0.17
@@ -274,8 +340,8 @@ final class GameModel: ObservableObject {
         }
     }
 
-    var isSequenceMode: Bool { family != .chord && mode == .sequence }
-    var isMultiMode: Bool { family == .twoHand || family == .chord }
+    var isSequenceMode: Bool { family != .chord && family != .sight && mode == .sequence }
+    var isMultiMode: Bool { family == .twoHand || family == .chord || family == .sight }
     var notationGroups: [[QuestionNote]] {
         family == .oneHand ? notes.map { [$0] } : multiGroups
     }
@@ -284,10 +350,12 @@ final class GameModel: ObservableObject {
         case .oneHand: return "staff"
         case .twoHand: return "grand"
         case .chord: return "chord"
+        case .sight: return "sight"
         }
     }
     var isSinglePresentation: Bool { !isSequenceMode }
     var activeTargetNotes: [QuestionNote] {
+        if family == .sight { return [] }
         if family == .oneHand {
             guard notes.indices.contains(activeIndex) else { return [] }
             return [notes[activeIndex]]
@@ -297,11 +365,16 @@ final class GameModel: ObservableObject {
     }
 
     var totalCorrectNeeded: Int {
+        if family == .sight { return sightSong?.attackGroups.count ?? 0 }
         if family == .chord { return 30 }
         return mode == .single ? 30 : 40
     }
 
     var progressText: String {
+        if family == .sight {
+            let total = sightSong?.attackGroups.count ?? 0
+            return "\(min(sightAttackIndex + 1, max(total, 1))) / \(max(total, 1))"
+        }
         if family == .chord || mode == .single {
             return "\(min(completedUnits + 1, 30)) / 30"
         }
@@ -319,7 +392,11 @@ final class GameModel: ObservableObject {
         isFinished = false; isPlaying = true
         sequenceSetClef = nil
         resetMultiWindow()
-        makeQuestion()
+        if family == .sight {
+            startSightReading()
+        } else {
+            makeQuestion()
+        }
     }
 
     func quit() {
@@ -330,6 +407,8 @@ final class GameModel: ObservableObject {
         notes = []
         multiGroups = []
         heldMidis = []
+        sightAttackIndex = 0
+        sightWrongAttempts = 0
         resetMultiWindow()
     }
 
@@ -377,7 +456,12 @@ final class GameModel: ObservableObject {
 
     // 양손/화음 전용. 첫 Note On부터 난이도별 허용시간 동안 들어온 음을 한 번의 동시입력으로 판정한다.
     func multiInput(_ midiNote: Int, playAppSound: Bool) {
-        guard isMultiMode, isPlaying, !isFinished, !finishing, !activeTargetNotes.isEmpty else { return }
+        guard isMultiMode, isPlaying, !isFinished, !finishing else { return }
+        if family == .sight {
+            guard sightSong?.attackGroups.indices.contains(sightAttackIndex) == true else { return }
+        } else {
+            guard !activeTargetNotes.isEmpty else { return }
+        }
         if playAppSound { audio.play(midi: midiNote) }
         multiWindowNotes.insert(midiNote)
         multiWindowLastInputAt = Date()
@@ -396,12 +480,21 @@ final class GameModel: ObservableObject {
             resetMultiWindow()
             return
         }
-        let expected = Set(activeTargetNotes.map(\.midi))
         let entered = multiWindowNotes
         let responseMoment = multiWindowLastInputAt ?? Date()
+        let expected: Set<Int>
+        if family == .sight, let song = sightSong, song.attackGroups.indices.contains(sightAttackIndex) {
+            expected = Set(song.attackGroups[sightAttackIndex].notes)
+        } else {
+            expected = Set(activeTargetNotes.map(\.midi))
+        }
         resetMultiWindow()
 
         guard !expected.isEmpty else { return }
+        if family == .sight {
+            evaluateSightAttempt(entered: entered, expected: expected, responseMoment: responseMoment)
+            return
+        }
         if entered == expected {
             if currentNoteMissed {
                 completedUnits += 1
@@ -421,6 +514,62 @@ final class GameModel: ObservableObject {
         } else {
             registerMissIfNeeded()
         }
+    }
+
+    private func startSightReading() {
+        sightAttackIndex = 0
+        sightWrongAttempts = 0
+        sightLoadError = nil
+        do {
+            guard let url = Bundle.main.url(forResource: "gymnopedie_no1_sightreading_v1", withExtension: "json") else {
+                throw NSError(domain: "SightReading", code: 1, userInfo: [NSLocalizedDescriptionKey: "초견 곡 데이터를 찾을 수 없습니다."])
+            }
+            let data = try Data(contentsOf: url)
+            sightSong = try JSONDecoder().decode(SightSong.self, from: data)
+            questionStart = Date()
+        } catch {
+            sightLoadError = error.localizedDescription
+            sightSong = nil
+        }
+    }
+
+    private func evaluateSightAttempt(entered: Set<Int>, expected: Set<Int>, responseMoment: Date) {
+        if entered == expected {
+            attemptCount += 1
+            correctCount += 1
+            combo += 1
+            maxCombo = max(maxCombo, combo)
+            let elapsed = responseMoment.timeIntervalSince(questionStart)
+            responseTimes.append(elapsed)
+            score += 100 + min(40, max(0, combo - 1))
+            sightAttackIndex += 1
+            completedUnits = sightAttackIndex
+            currentNoteMissed = false
+            questionStart = Date()
+
+            if let total = sightSong?.attackGroups.count, sightAttackIndex >= total {
+                finishing = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.finish() }
+            }
+        } else {
+            attemptCount += 1
+            sightWrongAttempts += 1
+            combo = 0
+            currentNoteMissed = true
+            showFeedback("MISS")
+        }
+    }
+
+    var sightCurrentMeasure: Int {
+        guard let song = sightSong, song.attackGroups.indices.contains(sightAttackIndex) else {
+            return sightSong?.measureCount ?? 1
+        }
+        return song.attackGroups[sightAttackIndex].measure
+    }
+
+    var sightCurrentOffset: Double {
+        guard let song = sightSong, song.attackGroups.indices.contains(sightAttackIndex) else { return 0 }
+        return song.attackGroups[sightAttackIndex].offsetBeats
     }
 
     private func addSpeedScore(elapsed: Double) {
@@ -537,6 +686,9 @@ final class GameModel: ObservableObject {
                 previous = pair
             }
             multiGroups = groups
+
+        case .sight:
+            return
 
         case .chord:
             let clef = chooseClef()
@@ -842,7 +994,7 @@ struct StartView: View {
                     .tracking(-0.8)
                     .lineSpacing(4)
 
-                Text("한손부터 양손, 화음까지 실제 피아노로\n빠르고 정확하게 읽는 감각을 훈련합니다.")
+                Text("한손부터 양손, 화음, 실제 곡 초견까지\n빠르고 정확하게 읽는 감각을 훈련합니다.")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(AppTheme.muted)
                     .lineSpacing(5)
@@ -887,6 +1039,37 @@ struct StartView: View {
                         }
                     }
 
+                    if game.family == .sight {
+                        ModernSettingSection(title: "곡") {
+                            HStack(spacing: 14) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(AppTheme.accentSoft)
+                                        .frame(width: 48, height: 48)
+                                    Image(systemName: "music.quarternote.3")
+                                        .foregroundStyle(AppTheme.accent)
+                                }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("1ère Gymnopédie")
+                                        .font(.headline.weight(.bold))
+                                        .foregroundStyle(AppTheme.ink)
+                                    Text("Erik Satie · 1888 · 3/4 · 78마디 · ♩ = 76")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.muted)
+                                }
+                                Spacer()
+                                Text("테스트곡")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(AppTheme.accent)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(AppTheme.accentSoft, in: Capsule())
+                            }
+                            .padding(14)
+                            .background(Color.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay { RoundedRectangle(cornerRadius: 14).stroke(AppTheme.line, lineWidth: 1) }
+                        }
+                    } else {
                     HStack(alignment: .top, spacing: 18) {
                         ModernSettingSection(title: game.family == .chord ? "구성" : "방식") {
                             HStack(spacing: 8) {
@@ -939,6 +1122,8 @@ struct StartView: View {
                                 }
                             }
                         }
+                    }
+
                     }
 
                     HStack {
@@ -1088,6 +1273,145 @@ struct TrainingView: View {
     @EnvironmentObject var game: GameModel
 
     var body: some View {
+        if game.family == .sight {
+            SightReadingTrainingView()
+        } else {
+            StandardTrainingView()
+        }
+    }
+}
+
+struct SightReadingTrainingView: View {
+    @EnvironmentObject var game: GameModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 14) {
+                Button(action: game.quit) {
+                    HStack(spacing: 6) { Image(systemName: "chevron.left"); Text("설정") }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.ink)
+                        .padding(.horizontal, 12)
+                        .frame(height: 36)
+                        .background(.white.opacity(0.72), in: Capsule())
+                        .overlay { Capsule().stroke(AppTheme.line, lineWidth: 1) }
+                }.buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("1ère Gymnopédie")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(AppTheme.ink)
+                    Text("Erik Satie · 초견 · 3/4 · ♩ = 76")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                }
+                Spacer(minLength: 8)
+                HUDItem(label: "마디", value: "\(game.sightCurrentMeasure) / 78")
+                HUDItem(label: "진행", value: game.progressText)
+                HUDItem(label: "오답", value: "\(game.sightWrongAttempts)")
+                HUDItem(label: "정확도", value: String(format: "%.1f%%", game.accuracy))
+                StatusPill(text: game.midi.sources.isEmpty ? "MIDI 대기" : "MIDI 연결", on: !game.midi.sources.isEmpty)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 8)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(.white)
+                    .overlay { RoundedRectangle(cornerRadius: 22).stroke(AppTheme.line, lineWidth: 1) }
+                    .shadow(color: .black.opacity(0.035), radius: 14, y: 5)
+
+                if let error = game.sightLoadError {
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                        Text("곡 데이터를 불러오지 못했습니다")
+                            .font(.headline)
+                        Text(error).font(.caption).foregroundStyle(AppTheme.muted)
+                    }
+                } else if game.sightSong != nil {
+                    SightScoreWebView(activeIndex: game.sightAttackIndex)
+                        .clipShape(RoundedRectangle(cornerRadius: 22))
+                } else {
+                    ProgressView("악보 불러오는 중…")
+                }
+
+                VStack(spacing: 0) {
+                    if !game.feedback.isEmpty {
+                        Text(game.feedback)
+                            .font(.system(size: 42, weight: .black, design: .rounded))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 22).padding(.vertical, 6)
+                            .background(.white.opacity(0.95), in: Capsule())
+                            .overlay { Capsule().stroke(AppTheme.line, lineWidth: 1) }
+                    }
+                    Spacer()
+                }
+                .padding(.top, 10)
+                .allowsHitTesting(false)
+            }
+            .frame(maxHeight: .infinity)
+            .padding(.horizontal, 22)
+
+            if game.showKeyboard {
+                MultiTouchPianoKeyboardView(range: 36...84, externalPressed: game.heldMidis) { midi in
+                    game.multiInput(midi, playAppSound: true)
+                }
+                .frame(height: 170)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 8)
+            }
+        }
+    }
+}
+
+struct SightScoreWebView: UIViewRepresentable {
+    let activeIndex: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.isOpaque = false
+        web.backgroundColor = .clear
+        web.scrollView.isScrollEnabled = false
+        web.navigationDelegate = context.coordinator
+        context.coordinator.webView = web
+        if let url = Bundle.main.url(forResource: "sight_score", withExtension: "html") {
+            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        }
+        return web
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.pendingIndex = activeIndex
+        context.coordinator.renderIfReady()
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        weak var webView: WKWebView?
+        var ready = false
+        var pendingIndex = 0
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            ready = true
+            renderIfReady()
+        }
+
+        func renderIfReady() {
+            guard ready, let webView else { return }
+            webView.evaluateJavaScript("window.renderSightScore(\(pendingIndex));") { _, error in
+                if let error { print("Sight score JS error: \(error)") }
+            }
+        }
+    }
+}
+
+struct StandardTrainingView: View {
+    @EnvironmentObject var game: GameModel
+
+    var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 14) {
                 Button(action: game.quit) {
@@ -1211,6 +1535,8 @@ struct TrainingView: View {
             guard let target = game.activeTargetNotes.first else { return "화음" }
             let clef = target.clef == .treble ? "높은음자리표" : "낮은음자리표"
             return "\(game.chordSize.label) 화음 · \(clef)"
+        case .sight:
+            return "초견 · 1ère Gymnopédie"
         }
     }
 

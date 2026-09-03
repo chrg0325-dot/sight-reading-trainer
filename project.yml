@@ -16,6 +16,8 @@ targets:
           - Vendor
     resources:
       - path: Sources/notation.html
+      - path: Sources/sight_score.html
+      - path: Sources/gymnopedie_no1_sightreading_v1.json
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sightreadingtrainer
