@@ -53,3 +53,9 @@
 
 초견 곡 데이터: `Sources/gymnopedie_no1_sightreading_v1.json`
 초견 악보 렌더러: `Sources/sight_score.html`
+
+
+## 초견 모드 2차 수정
+- iPad WKWebView에서 `fetch()`로 번들 JSON을 읽다가 `TypeError: Load failed`가 발생하는 문제를 제거했습니다.
+- Gymnopédie No.1 초견 데이터를 `sight_score.html`에 빌드타임으로 내장해 네트워크/파일 fetch 없이 완전 오프라인으로 렌더링합니다.
+- HTML UTF-8 charset을 명시해 오류 메시지 한글 깨짐을 방지합니다.
