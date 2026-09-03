@@ -19,201 +19,270 @@ const song={"schemaVersion":"1.0","id":"satie_gymnopedie_1","title":"1ère Gymno
 const VF=Vex.Flow;
 let currentActiveIndex=0;
 
+// v4 engraving: keep the verified 78-measure data, but make each visible
+// system behave like one continuous piano grand staff.
 const SYSTEM_MEASURES=5;
 const SYSTEMS_VISIBLE=2;
-const STAFF_GAP=78;
-const SYSTEM_GAP=222;
+const STAFF_GAP=72;
+const SYSTEM_GAP=218;
+const TOP_FIRST=48;
+const TOP_OTHER=34;
 
-function durCode(beats,isRest){
+function nearly(a,b){ return Math.abs(Number(a)-Number(b))<0.01; }
+function durationCode(beats,isRest){
   const b=Number(beats);
-  if(Math.abs(b-3)<0.01) return isRest?'wr':'hd';
-  if(Math.abs(b-2)<0.01) return isRest?'hr':'h';
-  if(Math.abs(b-1)<0.01) return isRest?'qr':'q';
-  if(Math.abs(b-1.5)<0.01) return isRest?'qdr':'qd';
-  if(Math.abs(b-0.5)<0.01) return isRest?'8r':'8';
+  if(nearly(b,3)) return isRest?'wr':'h';
+  if(nearly(b,2)) return isRest?'hr':'h';
+  if(nearly(b,1.5)) return isRest?'qr':'q';
+  if(nearly(b,1)) return isRest?'qr':'q';
+  if(nearly(b,0.5)) return isRest?'8r':'8';
   return isRest?'qr':'q';
 }
-function stemFor(voice){
-  if(voice==='lhBass') return -1;
-  if(voice==='bassUpper') return 1;
-  if(voice==='accompaniment') return -1;
-  return 1;
+function stemDirection(voiceId){
+  if(voiceId==='rhMelody') return VF.Stem.UP;
+  if(voiceId==='accompaniment') return VF.Stem.DOWN;
+  if(voiceId==='bassUpper') return VF.Stem.UP;
+  if(voiceId==='lhBass') return VF.Stem.DOWN;
+  return VF.Stem.UP;
 }
-function noteFromEvent(ev,voiceId){
+function makeNote(ev,voiceId){
   const isRest=ev.type==='rest';
-  const keys=isRest?['b/4']:(ev.pitches||[]).map(p=>p.vexKey);
-  const n=new VF.StaveNote({
+  // B4 gives a visually centered treble rest; D3 centers bass rests better.
+  const restKey=ev.staff==='bass'?'d/3':'b/4';
+  const keys=isRest?[restKey]:(ev.pitches||[]).map(p=>p.vexKey);
+  const note=new VF.StaveNote({
     clef:ev.staff==='bass'?'bass':'treble',
-    keys:keys,
-    duration:durCode(ev.durationBeats,isRest),
-    stem_direction:stemFor(voiceId),
+    keys,
+    duration:durationCode(ev.durationBeats,isRest),
+    stem_direction:stemDirection(voiceId),
     auto_stem:false
   });
-  n.__sr={event:ev,voiceId:voiceId};
-  if(isRest && Number(ev.durationBeats)>=2.99){
-    try{ n.setCenterAlignment(true); }catch(_){ }
+
+  // 3 beats is a dotted half NOTE, but a whole-rest glyph in a 3/4 bar.
+  if(!isRest && nearly(ev.durationBeats,3)) {
+    try{ VF.Dot.buildAndAttach([note],{all:true}); }catch(_){ }
   }
+  if(!isRest && nearly(ev.durationBeats,1.5)) {
+    try{ VF.Dot.buildAndAttach([note],{all:true}); }catch(_){ }
+  }
+  if(isRest && nearly(ev.durationBeats,3)) {
+    try{ note.setCenterAlignment(true); }catch(_){ }
+  }
+
   if(!isRest){
-    (ev.pitches||[]).forEach((p,i)=>{
-      const a=p.displayAccidental || (p.forcedAccidental ? p.accidental : null);
-      if(a){ try{ n.addModifier(new VF.Accidental(a),i); }catch(_){ } }
+    (ev.pitches||[]).forEach((pitch,index)=>{
+      const acc=pitch.displayAccidental || (pitch.forcedAccidental ? pitch.accidental : null);
+      if(acc){ try{ note.addModifier(new VF.Accidental(acc),index); }catch(_){ } }
     });
-    if(Math.abs(Number(ev.durationBeats)-3)<0.01 || Math.abs(Number(ev.durationBeats)-1.5)<0.01){
-      try{ VF.Dot.buildAndAttach([n],{all:true}); }catch(_){ }
-    }
+    // VexFlow can make low accompaniment stems visually very long. Limit them
+    // to conventional piano-score lengths while retaining voice direction.
+    try{ note.setStemLength(30); }catch(_){ }
   }
-  return n;
+  return note;
 }
-function voiceForEvents(events,voiceId){
-  const notes=events.map(ev=>noteFromEvent(ev,voiceId));
-  const v=new VF.Voice({num_beats:3,beat_value:4});
-  v.setStrict(false); v.addTickables(notes);
-  return {voice:v,notes:notes};
+function makeVoice(events,voiceId){
+  const notes=events.map(ev=>makeNote(ev,voiceId));
+  const voice=new VF.Voice({num_beats:3,beat_value:4});
+  voice.setStrict(false);
+  voice.addTickables(notes);
+  return {voice,notes};
 }
-function addSystemHeader(treble,bass,isFirstSystem){
+function addHeader(treble,bass,isPieceBeginning){
   treble.addClef('treble').addKeySignature('D');
   bass.addClef('bass').addKeySignature('D');
-  if(isFirstSystem){
+  if(isPieceBeginning){
     treble.addTimeSignature('3/4');
     bass.addTimeSignature('3/4');
   }
 }
-function dynamicAt(measure){
-  return (song.annotations && song.annotations.dynamics || []).filter(d=>d.measure===measure);
+function dynamicForMeasure(measure){
+  return ((song.annotations&&song.annotations.dynamics)||[]).filter(d=>d.measure===measure);
 }
-function addDynamic(ctx,stave,measure,which){
-  const arr=dynamicAt(measure).filter(d=>{
-    if(which==='treble') return d.voice==='rhMelody'||d.voice==='accompaniment';
-    return d.voice==='lhBass'||d.voice==='bassUpper'||(d.voice==='accompaniment' && measure>=19);
+function drawDynamic(ctx,treble,bass,measure){
+  const items=dynamicForMeasure(measure);
+  if(!items.length) return;
+  items.forEach((d,idx)=>{
+    const bassVoice=d.voice==='lhBass'||d.voice==='bassUpper'||(d.voice==='accompaniment' && measure>=19 && measure<=31)||(d.voice==='accompaniment' && measure>=58 && measure<=70);
+    const stave=bassVoice?bass:treble;
+    const x=stave.getNoteStartX()+12+(idx*18);
+    // RH dynamics sit under the treble staff like the source; bass dynamics under bass.
+    const y=bassVoice?stave.getYForLine(4)+29:stave.getYForLine(4)+27;
+    try{
+      ctx.save(); ctx.setFont('Times New Roman',15,'bold italic'); ctx.setFillStyle('#111827');
+      ctx.fillText(d.mark,x,y); ctx.restore();
+    }catch(_){ }
   });
-  if(!arr.length) return;
-  const txt=arr[0].mark;
-  const x=stave.getNoteStartX()+4;
-  const y=which==='treble'?stave.getYForBottomText(0):stave.getYForBottomText(0);
-  try{ctx.save();ctx.setFont('Times New Roman',15,'bold italic');ctx.fillText(txt,x,y);ctx.restore();}catch(_){ }
 }
-function makeMeasure(ctx,x,y,w,number,isSystemStart,isFirstSystem,registry){
+function drawMeasureNumber(ctx,number,x,y){
+  try{
+    ctx.save(); ctx.setFont('Arial',9,'normal'); ctx.setFillStyle('#6b7280');
+    ctx.fillText(String(number),x+3,y-8); ctx.restore();
+  }catch(_){ }
+}
+function renderMeasure(ctx,x,y,w,number,isSystemStart,isPieceBeginning,registry){
   const treble=new VF.Stave(x,y,w);
   const bass=new VF.Stave(x,y+STAFF_GAP,w);
-  if(isSystemStart) addSystemHeader(treble,bass,isFirstSystem);
-  if(!isSystemStart){
+  if(isSystemStart) addHeader(treble,bass,isPieceBeginning);
+  else {
     treble.setBegBarType(VF.Barline.type.NONE);
     bass.setBegBarType(VF.Barline.type.NONE);
   }
-  treble.setContext(ctx).draw(); bass.setContext(ctx).draw();
+  treble.setContext(ctx).draw();
+  bass.setContext(ctx).draw();
+
   if(isSystemStart){
-    try{new VF.StaveConnector(treble,bass).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();}catch(_){ }
-    try{new VF.StaveConnector(treble,bass).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();}catch(_){ }
+    try{ new VF.StaveConnector(treble,bass).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw(); }catch(_){ }
+    try{ new VF.StaveConnector(treble,bass).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw(); }catch(_){ }
+    drawMeasureNumber(ctx,number,x,y);
   }
-  try{new VF.StaveConnector(treble,bass).setType(VF.StaveConnector.type.SINGLE_RIGHT).setContext(ctx).draw();}catch(_){ }
+  try{ new VF.StaveConnector(treble,bass).setType(VF.StaveConnector.type.SINGLE_RIGHT).setContext(ctx).draw(); }catch(_){ }
 
   const m=song.measures[number-1];
-  const bundles=[];
-  const voiceEntries=[];
+  const entries=[];
   Object.keys(m.voices).forEach(voiceId=>{
-    const events=m.voices[voiceId]; if(!events||!events.length) return;
-    const b=voiceForEvents(events,voiceId); bundles.push(b); voiceEntries.push({voiceId,events,bundle:b});
+    const events=m.voices[voiceId];
+    if(!events||!events.length) return;
+    const bundle=makeVoice(events,voiceId);
+    entries.push({voiceId,events,bundle,staff:events[0].staff==='bass'?bass:treble});
   });
-  const voices=bundles.map(b=>b.voice);
+
+  // The first bar contains clef + key + time, so calculate actual note space from
+  // VexFlow's stave rather than using the raw bar width.
+  const noteStart=treble.getNoteStartX();
+  const usable=Math.max(44,(x+w)-noteStart-12);
+  const voices=entries.map(e=>e.bundle.voice);
   if(voices.length){
-    const formatter=new VF.Formatter();
-    try{ formatter.joinVoices(voices); }catch(_){ }
-    formatter.format(voices,Math.max(36,w-(treble.getNoteStartX()-x)-18));
-    voiceEntries.forEach(entry=>{
-      const staff=entry.events[0].staff==='bass'?bass:treble;
-      entry.bundle.voice.draw(ctx,staff);
-      entry.events.forEach((ev,i)=>{
-        registry.push({measure:number,offset:Number(ev.offset),event:ev,note:entry.bundle.notes[i],voiceId:entry.voiceId});
-      });
+    try{
+      const formatter=new VF.Formatter();
+      // Do not join treble and bass voices into one collision group. They still
+      // share tick contexts, so beat positions align without cross-staff crowding.
+      formatter.format(voices,usable,{align_rests:true});
+    }catch(_){ }
+    entries.forEach(entry=>{
+      try{ entry.bundle.voice.draw(ctx,entry.staff); }catch(_){ }
+      entry.events.forEach((ev,i)=>registry.push({
+        measure:number, offset:Number(ev.offset), event:ev,
+        note:entry.bundle.notes[i], voiceId:entry.voiceId, stave:entry.staff
+      }));
     });
   }
-
-  if(isSystemStart){
-    try{ctx.save();ctx.setFont('Arial',10,'normal');ctx.setFillStyle('#6b7280');ctx.fillText(String(number),x+4,y-8);ctx.restore();}catch(_){ }
-  }
-  addDynamic(ctx,treble,number,'treble');
-  return {treble,bass};
-}
-function eventX(registry,measure,offset,fallback){
-  const candidates=registry.filter(r=>r.measure===measure && Math.abs(r.offset-offset)<0.01 && r.event.type!=='rest');
-  if(!candidates.length) return fallback;
-  try{return candidates[0].note.getAbsoluteX();}catch(_){return fallback;}
+  drawDynamic(ctx,treble,bass,number);
+  return {treble,bass,noteStart,usable};
 }
 function drawTies(ctx,registry){
   const byVoice={};
-  registry.forEach(r=>{(byVoice[r.voiceId]||(byVoice[r.voiceId]=[])).push(r);});
+  registry.forEach(r=>(byVoice[r.voiceId]||(byVoice[r.voiceId]=[])).push(r));
   Object.values(byVoice).forEach(list=>{
     list.sort((a,b)=>a.measure-b.measure||a.offset-b.offset);
     for(let i=0;i<list.length-1;i++){
       const a=list[i], b=list[i+1];
-      if(!a.event.tieStart || !b.event.tieStop || a.event.type==='rest'||b.event.type==='rest') continue;
-      const ac=(a.event.pitches||[]).length, bc=(b.event.pitches||[]).length, n=Math.min(ac,bc);
+      if(!a.event.tieStart || !b.event.tieStop || a.event.type==='rest' || b.event.type==='rest') continue;
+      const n=Math.min((a.event.pitches||[]).length,(b.event.pitches||[]).length);
       if(!n) continue;
-      try{new VF.StaveTie({first_note:a.note,last_note:b.note,first_indices:Array.from({length:n},(_,k)=>k),last_indices:Array.from({length:n},(_,k)=>k)}).setContext(ctx).draw();}catch(_){ }
+      try{
+        new VF.StaveTie({
+          first_note:a.note,last_note:b.note,
+          first_indices:Array.from({length:n},(_,k)=>k),
+          last_indices:Array.from({length:n},(_,k)=>k)
+        }).setContext(ctx).draw();
+      }catch(_){ }
     }
   });
 }
+function eventX(registry,measure,offset,fallback,minX,maxX){
+  const notes=registry.filter(r=>r.measure===measure && nearly(r.offset,offset) && r.event.type!=='rest');
+  let x=fallback;
+  if(notes.length){
+    const xs=notes.map(r=>{try{return r.note.getAbsoluteX();}catch(_){return NaN;}}).filter(Number.isFinite);
+    if(xs.length) x=xs.reduce((a,b)=>a+b,0)/xs.length;
+  }
+  return Math.max(minX,Math.min(maxX,x));
+}
 function render(activeIndex){
   currentActiveIndex=Math.max(0,Math.min(Number(activeIndex)||0,song.attackGroups.length-1));
-  const root=document.getElementById('score'); root.innerHTML=''; document.getElementById('error').style.display='none';
+  const root=document.getElementById('score');
+  root.innerHTML=''; document.getElementById('error').style.display='none';
   const width=Math.max(760,window.innerWidth||900);
   const height=Math.max(465,window.innerHeight||560);
-  const renderer=new VF.Renderer(root,VF.Renderer.Backends.SVG); renderer.resize(width,height);
-  const ctx=renderer.getContext(); ctx.setFillStyle('#111827'); ctx.setStrokeStyle('#111827');
+  const renderer=new VF.Renderer(root,VF.Renderer.Backends.SVG);
+  renderer.resize(width,height);
+  const ctx=renderer.getContext();
+  ctx.setFillStyle('#111827'); ctx.setStrokeStyle('#111827');
 
   const group=song.attackGroups[currentActiveIndex]||{measure:1,offsetBeats:0};
   const blockSize=SYSTEM_MEASURES*SYSTEMS_VISIBLE;
   let blockStart=Math.floor((group.measure-1)/blockSize)*blockSize+1;
   if(blockStart+blockSize-1>song.measureCount) blockStart=Math.max(1,song.measureCount-blockSize+1);
 
-  const left=24,right=20,top=34;
+  const left=18,right=18;
+  const top=(blockStart===1?TOP_FIRST:TOP_OTHER);
   const available=width-left-right;
   const registry=[];
-  let systems=[];
+  const systems=[];
+
   for(let s=0;s<SYSTEMS_VISIBLE;s++){
     const start=blockStart+s*SYSTEM_MEASURES;
     if(start>song.measureCount) break;
     const y=top+s*SYSTEM_GAP;
-    const firstHeader=(s===0); // each visible system needs clef/key; time only first system of piece
-    // reserve more width at system start for clef/key/time
-    const headerExtra=48;
-    const base=(available-headerExtra)/SYSTEM_MEASURES;
+    // Reserve substantial header width only on the first measure of each system.
+    // This is the key fix for the clef/key/time/pp collision seen in v3.
+    const headerExtra=(start===1?104:78);
+    const regular=(available-headerExtra)/SYSTEM_MEASURES;
     let x=left;
-    let systemMeasures=[];
+    const measures=[];
     for(let i=0;i<SYSTEM_MEASURES;i++){
-      const no=start+i;if(no>song.measureCount)break;
-      const w=base+(i===0?headerExtra:0);
-      const st=makeMeasure(ctx,x,y,w,no,i===0,no===1,registry);
-      systemMeasures.push({no,x,w,st}); x+=w;
+      const no=start+i; if(no>song.measureCount) break;
+      const w=regular+(i===0?headerExtra:0);
+      const st=renderMeasure(ctx,x,y,w,no,i===0,no===1,registry);
+      measures.push({no,x,w,st});
+      x+=w;
     }
-    systems.push({start,y,measures:systemMeasures});
+    systems.push({start,y,measures});
   }
 
   drawTies(ctx,registry);
 
-  // tempo and pedal markings only where they occur in displayed block
   if(blockStart===1){
-    try{ctx.save();ctx.setFont('Times New Roman',13,'bold');ctx.fillText('Lent et douloureux  ♩ = 76',left+5,20);ctx.restore();}catch(_){ }
-    try{ctx.save();ctx.setFont('Times New Roman',11,'italic');ctx.fillText('Ped. sim.',left+62,top+STAFF_GAP+68);ctx.restore();}catch(_){ }
+    try{
+      ctx.save(); ctx.setFont('Times New Roman',13,'bold'); ctx.setFillStyle('#111827');
+      ctx.fillText('Lent et douloureux  ♩ = 76',left+10,19); ctx.restore();
+    }catch(_){ }
+    try{
+      ctx.save(); ctx.setFont('Times New Roman',11,'italic'); ctx.setFillStyle('#374151');
+      ctx.fillText('Ped. sim.',left+66,top+STAFF_GAP+64); ctx.restore();
+    }catch(_){ }
   }
 
-  // current-position cursor: anchored to the actual formatted note x when possible.
-  const sys=systems.find(ss=>group.measure>=ss.start && group.measure<ss.start+SYSTEM_MEASURES);
-  if(sys){
-    const mm=sys.measures.find(m=>m.no===group.measure);
+  // Cursor is clamped to the musical note area so it never covers the clef,
+  // key signature, or time signature.
+  const system=systems.find(s=>group.measure>=s.start && group.measure<s.start+SYSTEM_MEASURES);
+  if(system){
+    const mm=system.measures.find(m=>m.no===group.measure);
     if(mm){
-      const fallback=mm.x+mm.w*0.55;
-      const cx=eventX(registry,group.measure,Number(group.offsetBeats),fallback);
-      const y1=mm.st.treble.getYForLine(0)-15;
-      const y2=mm.st.bass.getYForLine(4)+16;
-      try{ctx.save();ctx.setStrokeStyle('#d97706');ctx.setLineWidth(2.2);ctx.beginPath();ctx.moveTo(cx,y1);ctx.lineTo(cx,y2);ctx.stroke();ctx.restore();}catch(_){ }
+      const minX=mm.st.treble.getNoteStartX()+7;
+      const maxX=mm.x+mm.w-8;
+      const beatFallback=minX+((maxX-minX)*(Number(group.offsetBeats)/3));
+      const cx=eventX(registry,group.measure,Number(group.offsetBeats),beatFallback,minX,maxX);
+      const y1=mm.st.treble.getYForLine(0)-12;
+      const y2=mm.st.bass.getYForLine(4)+12;
+      try{
+        ctx.save(); ctx.setStrokeStyle('#d97706'); ctx.setLineWidth(1.6); ctx.setGlobalAlpha(0.78);
+        ctx.beginPath(); ctx.moveTo(cx,y1); ctx.lineTo(cx,y2); ctx.stroke(); ctx.restore();
+      }catch(_){ }
     }
   }
 }
 
-window.renderSightScore=function(activeIndex){try{render(activeIndex);return 'ok';}catch(e){showError(e);return String(e);}};
-function showError(e){const root=document.getElementById('score');root.innerHTML='';const box=document.getElementById('error');box.style.display='block';box.textContent='악보 렌더링 오류: '+(e&&e.message?e.message:e);}
-try{render(0);}catch(e){showError(e);}
+window.renderSightScore=function(activeIndex){
+  try{ render(activeIndex); return 'ok'; }
+  catch(e){ showError(e); return String(e); }
+};
+function showError(e){
+  document.getElementById('score').innerHTML='';
+  const box=document.getElementById('error'); box.style.display='block';
+  box.textContent='악보 렌더링 오류: '+(e&&e.message?e.message:e);
+}
+try{ render(0); }catch(e){ showError(e); }
 window.addEventListener('resize',()=>{try{render(currentActiveIndex);}catch(e){showError(e);}});
 })();
 </script>
